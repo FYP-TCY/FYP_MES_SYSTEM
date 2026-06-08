@@ -51,34 +51,50 @@ export default function WorkerPage() {
   useEffect(() => { inputRef.current?.focus() }, [])
 
   // ── Realtime PLC subscription ───────────────────────────
-  useEffect(() => {
-    const channel = supabaseBrowser
-      .channel('worker-plc-v2')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'plc_readings' },
-        (payload) => {
-          const row = payload.new as PlcReading
-          setPlc(row)
-
-          // Check completion
-          if (order?.total_pcs && row.current_pcs >= order.total_pcs) {
-            setIsComplete(true)
-          }
-        }
-      )
-      .subscribe()
-
-    // Initial fetch
-    supabaseBrowser
+// ── 页面加载时自动恢复 session ───────────────────────────
+useEffect(() => {
+  async function restoreSession() {
+    // 1. 读取最新的 plc_readings
+    const { data: plcRow } = await supabaseBrowser
       .from('plc_readings')
       .select('*')
       .order('recorded_at', { ascending: false })
       .limit(1)
-      .then(({ data }) => { if (data?.[0]) setPlc(data[0]) })
+      .single()
 
-    return () => { supabaseBrowser.removeChannel(channel) }
-  }, [order])
+    if (!plcRow) return
+    setPlc(plcRow)
+
+    // 2. 如果有 session_so，自动恢复订单
+    if (plcRow.session_so) {
+      const { data: orderData } = await supabaseBrowser
+        .from('orders')
+        .select('*')
+        .eq('so_number', plcRow.session_so)
+        .limit(1)
+        .single()
+
+      if (orderData) setOrder(orderData)
+
+      // 3. 恢复 session id
+      const { data: sessionData } = await supabaseBrowser
+        .from('job_sessions')
+        .select('*')
+        .eq('so_number', plcRow.session_so)
+        .eq('status', 'in_progress')
+        .order('started_at', { ascending: false })
+        .limit(1)
+        .single()
+
+      if (sessionData) {
+        setSessionId(sessionData.id)
+        setResumedPcs(sessionData.completed_pcs)
+      }
+    }
+  }
+
+  restoreSession()
+}, [])
 
   // ── Scan handler ────────────────────────────────────────
   async function handleScan(e: React.FormEvent) {

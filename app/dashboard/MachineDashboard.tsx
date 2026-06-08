@@ -3,7 +3,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabaseBrowser } from '@/lib/supabase-browser'
 
-// ── Types ────────────────────────────────────────────────────
 interface Order {
   id: number
   date_no: string
@@ -31,10 +30,12 @@ interface Order {
 interface PlcReading {
   machine_code: string
   length_mm: number
+  current_pcs: number
+  session_so: string | null
+  target_mm: number | null
   recorded_at: string
 }
 
-// ── Helper components ────────────────────────────────────────
 function StatusBadge({ status }: { status: string }) {
   const s = (status ?? '').toLowerCase()
   const map: Record<string, string> = {
@@ -59,113 +60,93 @@ function InfoRow({ label, value }: { label: string; value: string | number | nul
   )
 }
 
-// ── Main component ───────────────────────────────────────────
-export default function DashboardPage() {
-
-  const [soInput, setSoInput]       = useState('')
-  const [order, setOrder]           = useState<Order | null>(null)
-  const [searching, setSearching]   = useState(false)
-  const [notFound, setNotFound]     = useState(false)
-  const [plcData, setPlcData]       = useState<PlcReading | null>(null)
+export default function MachineDashboard() {
+  const [order, setOrder]               = useState<Order | null>(null)
+  const [plcData, setPlcData]           = useState<PlcReading | null>(null)
   const [plcConnected, setPlcConnected] = useState(false)
-  const [lastUpdate, setLastUpdate] = useState<string>('')
-  const inputRef = useRef<HTMLInputElement>(null)
+  const [lastUpdate, setLastUpdate]     = useState<string>('')
+  const [lastSo, setLastSo]             = useState<string | null>(null)
 
-  // ── Auto-focus input on load ─────────────────────────────
+  // ── load order by SO number ──────────────────────────────
+  async function loadOrder(soNumber: string) {
+    if (!soNumber || soNumber === lastSo) return
+    setLastSo(soNumber)
+
+    const { data, error } = await supabaseBrowser
+      .from('orders')
+      .select('*')
+      .eq('so_number', soNumber)
+      .limit(1)
+      .single()
+
+    if (!error && data) {
+      setOrder(data)
+      console.log('Order loaded:', soNumber)
+    }
+  }
+
+  // ── initial fetch: get latest plc reading ────────────────
   useEffect(() => {
-    inputRef.current?.focus()
+    async function fetchLatest() {
+      const { data } = await supabaseBrowser
+        .from('plc_readings')
+        .select('*')
+        .order('recorded_at', { ascending: false })
+        .limit(1)
+
+      if (data && data.length > 0) {
+        const row = data[0] as PlcReading
+        setPlcData(row)
+        setPlcConnected(true)
+        setLastUpdate(new Date().toLocaleTimeString('en-GB'))
+
+        // Auto-load order if session_so exists
+        if (row.session_so) {
+          loadOrder(row.session_so)
+        }
+      }
+    }
+
+    fetchLatest()
   }, [])
 
-  // ── Supabase Realtime: listen to plc_readings ────────────
+  // ── realtime subscription ────────────────────────────────
   useEffect(() => {
-    const machineCode = order?.machine_code
-
     const channel = supabaseBrowser
-      .channel('plc-live')
+      .channel('dashboard-plc')
       .on(
         'postgres_changes',
         {
           event: '*',
           schema: 'public',
           table: 'plc_readings',
-          ...(machineCode ? { filter: `machine_code=eq.${machineCode}` } : {}),
         },
         (payload) => {
           const row = payload.new as PlcReading
           setPlcData(row)
           setPlcConnected(true)
           setLastUpdate(new Date().toLocaleTimeString('en-GB'))
+
+          // If SO changed → auto load new order
+          if (row.session_so && row.session_so !== lastSo) {
+            loadOrder(row.session_so)
+          }
+
+          // If session cleared → clear order
+          if (!row.session_so) {
+            setOrder(null)
+            setLastSo(null)
+          }
         }
       )
       .subscribe()
 
-    // Also do initial fetch
-    async function fetchLatestPlc() {
-      const query = supabaseBrowser
-        .from('plc_readings')
-        .select('*')
-        .order('recorded_at', { ascending: false })
-        .limit(1)
+    return () => { supabaseBrowser.removeChannel(channel) }
+  }, [lastSo])
 
-      if (machineCode) {
-        query.eq('machine_code', machineCode)
-      }
+  const plcMm  = plcData?.length_mm ?? 0
+  const plcPcs = plcData?.current_pcs ?? 0
 
-      const { data } = await query
-      if (data && data.length > 0) {
-        setPlcData(data[0])
-        setPlcConnected(true)
-        setLastUpdate(new Date().toLocaleTimeString('en-GB'))
-      }
-    }
-
-    fetchLatestPlc()
-
-    return () => {
-      supabaseBrowser.removeChannel(channel)
-    }
-  }, [order?.machine_code])
-
-  // ── SO Number lookup ─────────────────────────────────────
-  async function handleScan(e: React.FormEvent) {
-    e.preventDefault()
-    const so = soInput.trim()
-    if (!so) return
-
-    setSearching(true)
-    setNotFound(false)
-    setOrder(null)
-
-    const { data, error } = await supabaseBrowser
-      .from('orders')
-      .select('*')
-      .eq('so_number', so)
-      .limit(1)
-      .single()
-
-    setSearching(false)
-
-    if (error || !data) {
-      setNotFound(true)
-      inputRef.current?.select()
-      return
-    }
-
-    setOrder(data)
-    setSoInput('')
-  }
-
-  function handleClear() {
-    setOrder(null)
-    setNotFound(false)
-    setSoInput('')
-    setTimeout(() => inputRef.current?.focus(), 50)
-  }
-
-  // ── PLC status indicator ─────────────────────────────────
-  const plcMm = plcData?.length_mm ?? null
-
-  // ── Render ───────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-[#f5f7fa] p-6">
 
@@ -177,78 +158,28 @@ export default function DashboardPage() {
           </div>
           <div>
             <p className="text-sm font-medium text-gray-800 leading-tight">Real-time Dashboard</p>
-            <p className="text-xs text-gray-400 leading-tight">Scan QR to load order · Live PLC length</p>
+            <p className="text-xs text-gray-400 leading-tight">
+              {order ? `Active: ${order.so_number}` : 'Waiting for worker to scan QR...'}
+            </p>
           </div>
         </div>
 
-        {/* PLC status pill */}
+        {/* PLC status */}
         <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border ${
           plcConnected
             ? 'bg-[#eaf3de] text-[#27500a] border-[#c0dd97]'
             : 'bg-[#f1efe8] text-[#5f5e5a] border-[#d3d1c7]'
         }`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${plcConnected ? 'bg-[#639922]' : 'bg-[#888780]'}`} />
-          {plcConnected ? `PLC connected · ${lastUpdate}` : 'PLC not connected'}
+          <span className={`w-1.5 h-1.5 rounded-full ${plcConnected ? 'bg-[#639922] animate-pulse' : 'bg-[#888780]'}`} />
+          {plcConnected ? `PLC live · ${lastUpdate}` : 'PLC not connected'}
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
 
-        {/* ── Left: QR Scan + Order Info ─────────────────── */}
+        {/* ── Left: Order info ────────────────────────────── */}
         <div className="flex flex-col gap-4">
-
-          {/* Scan input card */}
-          <div className="bg-white rounded-xl border border-gray-100 p-5">
-            <p className="text-[10.5px] font-medium text-gray-400 uppercase tracking-widest mb-4">
-              Scan QR Code
-            </p>
-            <form onSubmit={handleScan} className="flex gap-2">
-              <div className="flex-1 flex items-center gap-2 h-10 border border-gray-200 rounded-lg px-3 bg-gray-50 focus-within:border-[#1a56db] focus-within:bg-white transition-colors">
-                <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" className="text-gray-400 flex-shrink-0"><rect x="1" y="1" width="5" height="5" rx="0.5"/><rect x="8" y="1" width="5" height="5" rx="0.5"/><rect x="1" y="8" width="5" height="5" rx="0.5"/><rect x="9" y="9" width="1.5" height="1.5"/><rect x="11.5" y="9" width="1.5" height="1.5"/><rect x="9" y="11.5" width="1.5" height="1.5"/><rect x="11.5" y="11.5" width="1.5" height="1.5"/></svg>
-                <input
-                  ref={inputRef}
-                  type="text"
-                  value={soInput}
-                  onChange={e => { setSoInput(e.target.value); setNotFound(false) }}
-                  placeholder="SO Number will appear here after scan..."
-                  className="flex-1 text-xs bg-transparent outline-none text-gray-700 placeholder-gray-300"
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={searching || !soInput.trim()}
-                className="px-4 h-10 text-xs font-medium rounded-lg bg-[#1a56db] text-white hover:bg-[#1648c0] disabled:opacity-40 transition-colors"
-              >
-                {searching ? 'Searching...' : 'Load'}
-              </button>
-              {order && (
-                <button
-                  type="button"
-                  onClick={handleClear}
-                  className="px-3 h-10 text-xs rounded-lg border border-gray-200 bg-white text-gray-500 hover:bg-gray-50 transition-colors"
-                >
-                  Clear
-                </button>
-              )}
-            </form>
-
-            {/* Not found message */}
-            {notFound && (
-              <div className="mt-3 flex items-center gap-2 p-3 bg-[#fcebeb] rounded-lg">
-                <span className="text-[#791f1f] text-xs">⚠ SO Number not found in database. Check the QR code or wait for the next sync.</span>
-              </div>
-            )}
-
-            {/* Instruction when no order loaded */}
-            {!order && !notFound && (
-              <p className="mt-3 text-xs text-gray-300 text-center">
-                Point the wireless scanner at the Ecount QR code — it will auto-fill and load
-              </p>
-            )}
-          </div>
-
-          {/* Order info card */}
-          {order && (
+          {order ? (
             <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
               <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100 bg-[#f8faff]">
                 <div>
@@ -257,38 +188,48 @@ export default function DashboardPage() {
                 </div>
                 <StatusBadge status={order.status} />
               </div>
-
               <div className="px-5 py-1">
-                <InfoRow label="Date No."       value={order.date_no} />
-                <InfoRow label="Item Group I"   value={order.item_group_1} />
-                <InfoRow label="Item Group II"  value={order.item_group_2} />
-                <InfoRow label="Item Group III" value={order.item_group_3} />
-                <InfoRow label="Item Code"      value={order.item_code} />
-                <InfoRow label="Item Name"      value={order.item_name} />
-                <InfoRow label="Machine"        value={order.machine_code} />
-                <InfoRow label="Target Length"  value={order.length_m ? `${order.length_m} m` : null} />
-                <InfoRow label="Total PCS"      value={order.total_pcs} />
-                <InfoRow label="Total KG"       value={order.total_kg ? `${order.total_kg} kg` : null} />
+                <InfoRow label="Date No."        value={order.date_no} />
+                <InfoRow label="Item Group I"    value={order.item_group_1} />
+                <InfoRow label="Item Group II"   value={order.item_group_2} />
+                <InfoRow label="Item Group III"  value={order.item_group_3} />
+                <InfoRow label="Item Code"       value={order.item_code} />
+                <InfoRow label="Item Name"       value={order.item_name} />
+                <InfoRow label="Machine"         value={order.machine_code} />
+                <InfoRow label="Target Length"   value={order.length_m ? `${order.length_m} m` : null} />
+                <InfoRow label="Total PCS"       value={order.total_pcs} />
+                <InfoRow label="Total KG"        value={order.total_kg ? `${order.total_kg} kg` : null} />
                 <InfoRow label="Special Packing" value={order.special_packing} />
-                <InfoRow label="Salesman"       value={order.salesman_name} />
-                <InfoRow label="Sales Co."      value={order.sales_co_name} />
-                <InfoRow label="Delivery Date"  value={order.delivery_date} />
-                <InfoRow label="Customer"       value={order.customer_name} />
+                <InfoRow label="Salesman"        value={order.salesman_name} />
+                <InfoRow label="Sales Co."       value={order.sales_co_name} />
+                <InfoRow label="Delivery Date"   value={order.delivery_date} />
+                <InfoRow label="Customer"        value={order.customer_name} />
               </div>
+            </div>
+          ) : (
+            // No order loaded yet
+            <div className="bg-white rounded-xl border border-gray-100 p-10 flex flex-col items-center justify-center gap-3 text-center">
+              <div className="w-14 h-14 rounded-full bg-gray-50 flex items-center justify-center text-2xl">
+                📋
+              </div>
+              <p className="text-sm font-medium text-gray-500">No active job order</p>
+              <p className="text-xs text-gray-300">
+                Waiting for worker to scan QR code on the machine terminal
+              </p>
             </div>
           )}
         </div>
 
-        {/* ── Right: Live PLC Length ─────────────────────── */}
+        {/* ── Right: Live PLC ─────────────────────────────── */}
         <div className="flex flex-col gap-4">
 
-          {/* Big live length display */}
-          <div className="bg-white rounded-xl border border-gray-100 p-6 flex flex-col items-center justify-center min-h-[240px]">
-            <p className="text-[10.5px] font-medium text-gray-400 uppercase tracking-widest mb-6">
+          {/* Big length display */}
+          <div className="bg-white rounded-xl border border-gray-100 p-6 flex flex-col items-center justify-center min-h-[220px]">
+            <p className="text-[10.5px] font-medium text-gray-400 uppercase tracking-widest mb-5">
               Live Cutting Length
             </p>
 
-            {plcConnected && plcMm !== null ? (
+            {plcConnected ? (
               <>
                 <div className="flex items-end gap-3 mb-2">
                   <span className="text-[72px] font-semibold text-gray-800 leading-none tabular-nums">
@@ -296,13 +237,13 @@ export default function DashboardPage() {
                   </span>
                   <span className="text-2xl text-gray-400 mb-3">mm</span>
                 </div>
-                <span className="text-lg text-gray-400 tabular-nums">
+                <span className="text-lg text-gray-400 tabular-nums mb-4">
                   {(plcMm / 1000).toFixed(3)} m
                 </span>
 
-                {/* Progress vs target */}
+                {/* Progress bar */}
                 {order?.length_m && (
-                  <div className="w-full mt-6">
+                  <div className="w-full mt-2">
                     <div className="flex justify-between text-xs text-gray-400 mb-1.5">
                       <span>Progress vs target</span>
                       <span>{Math.min(100, Math.round((plcMm / (order.length_m * 1000)) * 100))}%</span>
@@ -321,62 +262,33 @@ export default function DashboardPage() {
                 )}
 
                 <p className="text-[11px] text-gray-300 mt-4">
-                  Last updated: {lastUpdate} · Machine: {plcData?.machine_code}
+                  Last updated: {lastUpdate} · {plcData?.machine_code}
                 </p>
               </>
             ) : (
               <div className="flex flex-col items-center gap-3">
-                <div className="w-12 h-12 rounded-full bg-gray-50 flex items-center justify-center">
-                  <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-gray-300">
-                    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-                  </svg>
-                </div>
                 <p className="text-sm text-gray-300">Waiting for PLC data...</p>
-                <p className="text-xs text-gray-200">Make sure the bridge script is running on the machine PC</p>
+                <p className="text-xs text-gray-200">Make sure bridge script is running</p>
               </div>
             )}
           </div>
 
-          {/* Machine info card */}
-          {plcData && (
+          {/* PCS counter */}
+          {plcConnected && (
             <div className="bg-white rounded-xl border border-gray-100 p-5">
               <p className="text-[10.5px] font-medium text-gray-400 uppercase tracking-widest mb-3">
-                Machine Status
+                Pieces Counter
               </p>
               <div className="grid grid-cols-2 gap-3">
                 {[
-                  { label: 'Machine code', value: plcData.machine_code },
-                  { label: 'Last reading', value: lastUpdate },
-                  { label: 'Length (mm)',  value: plcMm?.toLocaleString() },
-                  { label: 'Length (m)',   value: plcMm ? (plcMm / 1000).toFixed(3) : null },
+                  { label: 'Pieces done',  value: plcPcs.toString() },
+                  { label: 'Target PCS',   value: order?.total_pcs?.toString() ?? '—' },
+                  { label: 'Length (mm)',  value: plcMm.toLocaleString() },
+                  { label: 'Length (m)',   value: (plcMm / 1000).toFixed(3) },
                 ].map(item => (
                   <div key={item.label} className="bg-gray-50 rounded-lg p-3">
                     <p className="text-[10.5px] text-gray-400 mb-1">{item.label}</p>
-                    <p className="text-sm font-medium text-gray-700 tabular-nums">{item.value ?? '—'}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* How to use hint */}
-          {!order && (
-            <div className="bg-white rounded-xl border border-gray-100 p-5">
-              <p className="text-[10.5px] font-medium text-gray-400 uppercase tracking-widest mb-3">
-                How to use
-              </p>
-              <div className="flex flex-col gap-3">
-                {[
-                  { step: '1', text: 'Point wireless scanner at the Ecount QR code on the job order' },
-                  { step: '2', text: 'Order details load automatically on the left panel' },
-                  { step: '3', text: 'Live cutting length from PLC shows on the right in real-time' },
-                  { step: '4', text: 'Progress bar shows how far along the target length you are' },
-                ].map(item => (
-                  <div key={item.step} className="flex items-start gap-3">
-                    <span className="w-5 h-5 rounded-full bg-[#e6f1fb] text-[#0c447c] text-[11px] font-medium flex items-center justify-center flex-shrink-0 mt-0.5">
-                      {item.step}
-                    </span>
-                    <p className="text-xs text-gray-500">{item.text}</p>
+                    <p className="text-sm font-medium text-gray-700 tabular-nums">{item.value}</p>
                   </div>
                 ))}
               </div>

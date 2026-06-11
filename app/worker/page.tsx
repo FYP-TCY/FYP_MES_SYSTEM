@@ -167,7 +167,8 @@ useEffect(() => {
     setScanning(false)
 
     // 3. Notify bridge: new session
-    await supabaseBrowser
+    // 3. Notify bridge: new session
+    const { data: updateResult, error: updateError } = await supabaseBrowser
       .from('plc_readings')
       .update({
         session_so: so,
@@ -175,7 +176,10 @@ useEffect(() => {
         current_pcs: startPcs,
       })
       .eq('machine_code', 'mc-01')
-  }
+      .select()
+
+    console.log('UPDATE result:', updateResult)
+    console.log('UPDATE error:', updateError)
 
   // ── End job ─────────────────────────────────────────────
   async function handleEndJob() {

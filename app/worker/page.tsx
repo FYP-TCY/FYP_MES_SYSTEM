@@ -180,7 +180,7 @@ useEffect(() => {
 
     console.log('UPDATE result:', updateResult)
     console.log('UPDATE error:', updateError)
-
+    }
   // ── End job ─────────────────────────────────────────────
   async function handleEndJob() {
     if (!sessionId || !order) return

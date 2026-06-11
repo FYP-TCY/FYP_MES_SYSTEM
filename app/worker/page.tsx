@@ -175,7 +175,7 @@ useEffect(() => {
         target_mm:  orderData.length_m ? Math.round(orderData.length_m * 1000) : null,
         current_pcs: startPcs,
       })
-      .eq('machine_code', 'mc-01')
+      .eq('machine_code', 'MC-01')
       .select()
 
     console.log('UPDATE result:', updateResult)
@@ -207,7 +207,7 @@ useEffect(() => {
         target_mm:   null,
         current_pcs: 0,
       })
-      .eq('machine_code', 'mc-01')
+      .eq('machine_code', 'MC-01')
 
     // Reset local state
     setOrder(null)

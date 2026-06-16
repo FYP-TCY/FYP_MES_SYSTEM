@@ -50,8 +50,7 @@ export default function WorkerPage() {
 
   useEffect(() => { inputRef.current?.focus() }, [])
 
-  // ── Realtime PLC subscription ───────────────────────────
-// ── 页面加载时自动恢复 session ───────────────────────────
+  // ── 页面加载时自动恢复 session ───────────────────────────
 useEffect(() => {
   async function restoreSession() {
     // 1. 读取最新的 plc_readings
@@ -95,6 +94,23 @@ useEffect(() => {
 
   restoreSession()
 }, [])
+
+  // ── Realtime PLC subscription ───────────────────────────
+  useEffect(() => {
+    const channel = supabaseBrowser
+      .channel('worker-plc')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'plc_readings' },
+        (payload) => {
+          const row = payload.new as PlcReading
+          setPlc(row)
+        }
+      )
+      .subscribe()
+
+    return () => { supabaseBrowser.removeChannel(channel) }
+  }, [])
 
   // ── Scan handler ────────────────────────────────────────
   async function handleScan(e: React.FormEvent) {

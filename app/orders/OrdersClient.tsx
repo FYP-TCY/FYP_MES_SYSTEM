@@ -1,33 +1,54 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useCallback } from 'react'
 import { Order } from '@/types/order'
+import { supabaseBrowser } from '@/lib/supabase-browser'
+
+const SYNC_INTERVAL_MS = 5 * 60 * 1000
 
 // ─── helpers ────────────────────────────────────────────────
 
-function parseDate(raw: string): Date | null {
+// Returns a timezone-safe "YYYY-MM-DD" key so it can be compared directly
+// against <input type="date"> values without going through Date object
+// UTC/local conversion (which shifts the day in positive UTC offsets).
+function parseDateKey(raw: string): string | null {
   if (!raw) return null
   const cleaned = raw.replace(/\s*-\d+\s*$/, '').trim()
-  let d = new Date(cleaned)
-  if (!isNaN(d.getTime())) return d
   const months: Record<string, number> = {
-    jan:0, feb:1, mar:2, apr:3, may:4, jun:5,
-    jul:6, aug:7, sep:8, oct:9, nov:10, dec:11
+    jan:1, feb:2, mar:3, apr:4, may:5, jun:6,
+    jul:7, aug:8, sep:9, oct:10, nov:11, dec:12
   }
   const match = cleaned.match(/^(\d{1,2})\/([A-Za-z]{3})\/(\d{4})$/)
   if (match) {
     const [, day, mon, year] = match
     const m = months[mon.toLowerCase()]
-    if (m !== undefined) {
-      d = new Date(Number(year), m, Number(day))
-      return isNaN(d.getTime()) ? null : d
-    }
+    if (m === undefined) return null
+    return `${year}-${String(m).padStart(2, '0')}-${String(Number(day)).padStart(2, '0')}`
   }
-  return null
+  const d = new Date(cleaned)
+  if (isNaN(d.getTime())) return null
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-function toInputDate(d: Date): string {
-  return d.toISOString().split('T')[0]
+function downloadCSV(rows: Record<string, unknown>[], filename: string) {
+  if (!rows.length) return
+  const headers = Object.keys(rows[0])
+  const lines = [
+    headers.join(','),
+    ...rows.map(r =>
+      headers.map(h => {
+        const val = r[h] ?? ''
+        return typeof val === 'string' && val.includes(',') ? `"${val}"` : String(val)
+      }).join(',')
+    ),
+  ]
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' })
+  const url  = URL.createObjectURL(blob)
+  const a    = document.createElement('a')
+  a.href     = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 function Highlight({ text, keyword }: { text: string; keyword: string }) {
@@ -125,11 +146,11 @@ function compareValues(a: Order, b: Order, key: ColKey): number {
     return (Number(va) || 0) - (Number(vb) || 0)
   }
   if (key === 'date_no') {
-    const da = parseDate(String(va ?? ''))
-    const db = parseDate(String(vb ?? ''))
-    if (da && db) return da.getTime() - db.getTime()
-    if (da) return -1
-    if (db) return 1
+    const ka = parseDateKey(String(va ?? ''))
+    const kb = parseDateKey(String(vb ?? ''))
+    if (ka && kb) return ka < kb ? -1 : ka > kb ? 1 : 0
+    if (ka) return -1
+    if (kb) return 1
     return 0
   }
   return String(va ?? '').localeCompare(String(vb ?? ''))
@@ -139,7 +160,29 @@ function compareValues(a: Order, b: Order, key: ColKey): number {
 
 type DateMode = 'specific' | 'range'
 
-export default function OrdersClient({ orders }: { orders: Order[] }) {
+export default function OrdersClient({ orders: initialOrders }: { orders: Order[] }) {
+
+  const [orders, setOrders] = useState(initialOrders)
+  const [syncing, setSyncing] = useState(false)
+  const [lastSynced, setLastSynced] = useState(() => new Date())
+
+  const syncOrders = useCallback(async () => {
+    setSyncing(true)
+    const { data, error } = await supabaseBrowser
+      .from('orders')
+      .select('*')
+      .order('seq_no', { ascending: true })
+    if (!error && data) {
+      setOrders(data as Order[])
+      setLastSynced(new Date())
+    }
+    setSyncing(false)
+  }, [])
+
+  useEffect(() => {
+    const id = setInterval(syncOrders, SYNC_INTERVAL_MS)
+    return () => clearInterval(id)
+  }, [syncOrders])
 
   const [keyword,   setKeyword]   = useState('')
   const [dateMode,  setDateMode]  = useState<DateMode>('range')
@@ -204,21 +247,15 @@ export default function OrdersClient({ orders }: { orders: Order[] }) {
       const rawDate = o.date_no
 
       if (appliedDateMode === 'specific' && appliedDateExact) {
-        const d = parseDate(rawDate)
-        const target = parseDate(appliedDateExact)
-        if (!d || !target) return false
-        if (toInputDate(d) !== toInputDate(target)) return false
+        const key = parseDateKey(rawDate)
+        if (!key || key !== appliedDateExact) return false
       }
 
       if (appliedDateMode === 'range' && (appliedDateFrom || appliedDateTo)) {
-        const d = parseDate(rawDate)
-        if (!d) return false
-        if (appliedDateFrom && d < new Date(appliedDateFrom)) return false
-        if (appliedDateTo) {
-          const end = new Date(appliedDateTo)
-          end.setHours(23, 59, 59, 999)
-          if (d > end) return false
-        }
+        const key = parseDateKey(rawDate)
+        if (!key) return false
+        if (appliedDateFrom && key < appliedDateFrom) return false
+        if (appliedDateTo && key > appliedDateTo) return false
       }
 
       return true
@@ -251,6 +288,27 @@ export default function OrdersClient({ orders }: { orders: Order[] }) {
   const rangeStart = filtered.length === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1
   const rangeEnd   = Math.min(currentPage * PAGE_SIZE, filtered.length)
 
+  function handleExport() {
+    downloadCSV(
+      sorted.map(o => ({
+        seq_no:       o.seq_no,
+        date_no:      o.date_no,
+        job_order_no: o.job_order_no,
+        so_number:    o.so_number,
+        machine_code: o.machine_code,
+        item_code:    o.item_code,
+        item_name:    o.item_name,
+        customer_name: o.customer_name,
+        pcs:          o.pcs ?? '',
+        total_kg:     o.total_kg ?? '',
+        status:       o.status,
+        priority:     o.priority,
+        delivery_date: o.delivery_date,
+      })),
+      `orders_${new Date().toISOString().slice(0, 10)}.csv`
+    )
+  }
+
   return (
     <div className="min-h-screen bg-[#f5f7fa] p-6">
 
@@ -265,9 +323,22 @@ export default function OrdersClient({ orders }: { orders: Order[] }) {
             <p className="text-xs text-gray-400 leading-tight">Production Dashboard</p>
           </div>
         </div>
-        <button className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 transition-colors">
-          ↓ Export
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={syncOrders}
+            disabled={syncing}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <span className={syncing ? 'animate-spin' : ''}>↻</span> {syncing ? 'Syncing…' : 'Refresh'}
+          </button>
+          <button
+            onClick={handleExport}
+            disabled={filtered.length === 0}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            ↓ Export
+          </button>
+        </div>
       </div>
 
       {/* Stat cards */}
@@ -416,7 +487,7 @@ export default function OrdersClient({ orders }: { orders: Order[] }) {
           <p className="text-xs text-gray-300">
             {hasActiveFilters
               ? `${filtered.length.toLocaleString()} of ${orders.length.toLocaleString()} orders`
-              : `${orders.length.toLocaleString()} orders · auto-sync every 5 min`}
+              : `${orders.length.toLocaleString()} orders · auto-sync every 5 min · last synced ${lastSynced.toLocaleTimeString('en-GB')}`}
           </p>
         </div>
 

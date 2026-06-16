@@ -10,7 +10,7 @@ interface Order {
   item_code: string
   item_name: string
   length_m: number | null
-  total_pcs: number | null
+  pcs: number | null
   total_kg: number | null
   machine_code: string
   customer_name: string
@@ -164,7 +164,7 @@ useEffect(() => {
           so_number:    so,
           job_order_no: orderData.job_order_no,
           machine_code: orderData.machine_code,
-          target_pcs:   orderData.total_pcs,
+          target_pcs:   orderData.pcs,
           target_mm:    orderData.length_m ? Math.round(orderData.length_m * 1000) : null,
           completed_pcs: 0,
           status:       'in_progress',
@@ -202,7 +202,7 @@ useEffect(() => {
     if (!sessionId || !order) return
 
     const finalPcs  = plc?.current_pcs ?? 0
-    const targetPcs = order.total_pcs ?? 0
+    const targetPcs = order.pcs ?? 0
     const jobStatus = finalPcs >= targetPcs && targetPcs > 0 ? 'done' : 'pending'
 
     // Save to job_sessions
@@ -237,7 +237,7 @@ useEffect(() => {
 
   const mmValue   = plc?.length_mm ?? 0
   const pcsValue  = plc?.current_pcs ?? 0
-  const targetPcs = order?.total_pcs ?? 0
+  const targetPcs = order?.pcs ?? 0
   const targetMm  = order?.length_m ? order.length_m * 1000 : null
   const pct       = targetMm ? Math.min(100, Math.round((mmValue / targetMm) * 100)) : 0
 
@@ -366,7 +366,7 @@ useEffect(() => {
                   { label: 'Item',          value: order.item_name },
                   { label: 'Customer',      value: order.customer_name },
                   { label: 'Target length', value: order.length_m ? `${order.length_m} m` : '—' },
-                  { label: 'Target PCS',    value: order.total_pcs ?? '—' },
+                  { label: 'Target PCS',    value: order.pcs ?? '—' },
                 ].map(item => (
                   <div key={item.label} className="bg-white/10 rounded-xl p-3">
                     <p className="text-xs opacity-60 mb-0.5">{item.label}</p>

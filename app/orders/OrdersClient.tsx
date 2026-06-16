@@ -124,7 +124,7 @@ function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
 // ─── column definitions ──────────────────────────────────────
 
 type ColKey = 'seq_no' | 'date_no' | 'job_order_no' | 'so_number' | 'machine_code' |
-              'item_code' | 'item_name' | 'pcs' | 'total_kg' | 'status'
+              'item_code' | 'item_name' | 'length_m' | 'pcs' | 'total_kg' | 'status'
 
 const COLUMNS: { key: ColKey; label: string; width: string }[] = [
   { key: 'seq_no',       label: 'Seq no.',   width: 'w-[90px]'  },
@@ -134,6 +134,7 @@ const COLUMNS: { key: ColKey; label: string; width: string }[] = [
   { key: 'machine_code', label: 'Machine',   width: 'w-[100px]' },
   { key: 'item_code',    label: 'Item code', width: 'w-[100px]' },
   { key: 'item_name',    label: 'Item name', width: 'w-[180px]' },
+  { key: 'length_m',     label: 'Length (m)', width: 'w-[90px]' },
   { key: 'pcs',          label: 'PCS',       width: 'w-[70px]'  },
   { key: 'total_kg',     label: 'KG',        width: 'w-[70px]'  },
   { key: 'status',       label: 'Status',    width: 'w-[110px]' },
@@ -142,7 +143,7 @@ const COLUMNS: { key: ColKey; label: string; width: string }[] = [
 function compareValues(a: Order, b: Order, key: ColKey): number {
   const va = a[key]
   const vb = b[key]
-  if (key === 'pcs' || key === 'total_kg') {
+  if (key === 'pcs' || key === 'total_kg' || key === 'length_m') {
     return (Number(va) || 0) - (Number(vb) || 0)
   }
   if (key === 'date_no') {
@@ -298,6 +299,7 @@ export default function OrdersClient({ orders: initialOrders }: { orders: Order[
         machine_code: o.machine_code,
         item_code:    o.item_code,
         item_name:    o.item_name,
+        length_m:     o.length_m ?? '',
         customer_name: o.customer_name,
         pcs:          o.pcs ?? '',
         total_kg:     o.total_kg ?? '',
@@ -519,6 +521,7 @@ export default function OrdersClient({ orders: initialOrders }: { orders: Order[
                   <td className="px-4 py-3 font-mono text-gray-600 truncate"><Highlight text={o.machine_code} keyword={appliedKeyword} /></td>
                   <td className="px-4 py-3 font-mono text-gray-500 truncate"><Highlight text={o.item_code} keyword={appliedKeyword} /></td>
                   <td className="px-4 py-3 text-gray-700 truncate"><Highlight text={o.item_name} keyword={appliedKeyword} /></td>
+                  <td className="px-4 py-3 text-right text-gray-600 tabular-nums">{o.length_m ?? '—'}</td>
                   <td className="px-4 py-3 text-right text-gray-600 tabular-nums">{o.pcs ?? '—'}</td>
                   <td className="px-4 py-3 text-right text-gray-600 tabular-nums">{o.total_kg ?? '—'}</td>
                   <td className="px-4 py-3"><StatusBadge status={o.status} /></td>

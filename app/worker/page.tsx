@@ -241,6 +241,10 @@ useEffect(() => {
   const targetMm  = order?.length_m ? order.length_m * 1000 : null
   const pct       = targetMm ? Math.min(100, Math.round((mmValue / targetMm) * 100)) : 0
 
+  useEffect(() => {
+    if (order && targetPcs > 0 && pcsValue >= targetPcs) setIsComplete(true)
+  }, [order, targetPcs, pcsValue])
+
   return (
     <div className="min-h-screen bg-[#f5f7fa] flex flex-col">
 

@@ -30,6 +30,7 @@ interface Order {
 interface PlcReading {
   machine_code: string
   length_mm: number
+  corrected_length_mm: number | null
   current_pcs: number
   session_so: string | null
   target_mm: number | null
@@ -144,8 +145,12 @@ export default function MachineDashboard() {
     return () => { supabaseBrowser.removeChannel(channel) }
   }, [lastSo])
 
-  const plcMm  = plcData?.length_mm ?? 0
-  const plcPcs = plcData?.current_pcs ?? 0
+  const plcMm       = plcData?.length_mm ?? 0
+  const plcCorrected = plcData?.corrected_length_mm ?? plcMm
+  const plcPcs      = plcData?.current_pcs ?? 0
+  const plcTarget   = plcData?.target_mm ?? null
+  const errMm       = plcTarget !== null ? plcCorrected - plcTarget : null
+  const errPct      = plcTarget !== null && plcTarget > 0 ? (errMm! / plcTarget) * 100 : null
 
   return (
     <div className="min-h-screen bg-[#f5f7fa] p-6">
@@ -292,6 +297,44 @@ export default function MachineDashboard() {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* Measurement comparison panel */}
+          {plcConnected && (
+            <div className="bg-white rounded-xl border border-gray-100 p-5">
+              <p className="text-[10.5px] font-medium text-gray-400 uppercase tracking-widest mb-3">
+                Measurement Comparison
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <p className="text-[10.5px] text-gray-400 mb-1">Raw PLC (mm)</p>
+                  <p className="text-sm font-medium text-gray-700 tabular-nums">{plcMm.toLocaleString()}</p>
+                </div>
+                <div className="bg-[#e6f1fb] rounded-lg p-3">
+                  <p className="text-[10.5px] text-[#0c447c] mb-1">Corrected (mm)</p>
+                  <p className="text-sm font-semibold text-[#0c447c] tabular-nums">{plcCorrected.toLocaleString()}</p>
+                </div>
+                <div className={`rounded-lg p-3 ${errMm === null ? 'bg-gray-50' : Math.abs(errMm) <= 2 ? 'bg-[#eaf3de]' : Math.abs(errMm) <= 5 ? 'bg-[#faeeda]' : 'bg-[#fce8e8]'}`}>
+                  <p className={`text-[10.5px] mb-1 ${errMm === null ? 'text-gray-400' : Math.abs(errMm) <= 2 ? 'text-[#27500a]' : Math.abs(errMm) <= 5 ? 'text-[#633806]' : 'text-[#7c1a1a]'}`}>
+                    Error (mm)
+                  </p>
+                  <p className={`text-sm font-semibold tabular-nums ${errMm === null ? 'text-gray-700' : Math.abs(errMm) <= 2 ? 'text-[#27500a]' : Math.abs(errMm) <= 5 ? 'text-[#633806]' : 'text-[#7c1a1a]'}`}>
+                    {errMm !== null ? (errMm > 0 ? '+' : '') + errMm.toFixed(1) : '—'}
+                  </p>
+                </div>
+                <div className={`rounded-lg p-3 ${errPct === null ? 'bg-gray-50' : Math.abs(errPct) <= 0.5 ? 'bg-[#eaf3de]' : Math.abs(errPct) <= 1 ? 'bg-[#faeeda]' : 'bg-[#fce8e8]'}`}>
+                  <p className={`text-[10.5px] mb-1 ${errPct === null ? 'text-gray-400' : Math.abs(errPct) <= 0.5 ? 'text-[#27500a]' : Math.abs(errPct) <= 1 ? 'text-[#633806]' : 'text-[#7c1a1a]'}`}>
+                    Error (%)
+                  </p>
+                  <p className={`text-sm font-semibold tabular-nums ${errPct === null ? 'text-gray-700' : Math.abs(errPct) <= 0.5 ? 'text-[#27500a]' : Math.abs(errPct) <= 1 ? 'text-[#633806]' : 'text-[#7c1a1a]'}`}>
+                    {errPct !== null ? (errPct > 0 ? '+' : '') + errPct.toFixed(2) + '%' : '—'}
+                  </p>
+                </div>
+              </div>
+              {plcTarget !== null && (
+                <p className="text-[10px] text-gray-300 mt-2.5">Target: {plcTarget.toLocaleString()} mm</p>
+              )}
             </div>
           )}
         </div>

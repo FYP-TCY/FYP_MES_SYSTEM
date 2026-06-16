@@ -131,35 +131,62 @@ export default function AnalyticsClient() {
     })
   }, [sessions, measurements])
 
-  // ── Latest reading per session (comparison) ────────────────
-  const comparisonRows = useMemo(() => {
-    const grouped: Record<string, MeasurementRecord[]> = {}
+  // ── Orders available for the per-order breakdown picker ────
+  const orderOptions = useMemo(() => {
+    const seen = new Set<string>()
+    const options: string[] = []
     for (const r of measurements) {
-      const key = r.session_so ?? 'no-session'
-      if (!grouped[key]) grouped[key] = []
-      grouped[key].push(r)
+      if (r.session_so && !seen.has(r.session_so)) {
+        seen.add(r.session_so)
+        options.push(r.session_so)
+      }
     }
-    return Object.entries(grouped)
-      .filter(([key]) => key !== 'no-session')
-      .map(([so, records]) => {
-        const latest = records[0]
-        const target = latest.target_mm
-        const corr   = latest.corrected_mm ?? latest.raw_mm
-        const errMm  = target !== null ? corr - target : null
-        const errPct = target !== null && target > 0 ? (errMm! / target) * 100 : null
-        return {
-          so_number:    so,
-          machine_code: latest.machine_code,
-          raw_mm:       latest.raw_mm,
-          corrected_mm: corr,
-          target_mm:    target,
-          error_mm:     errMm,
-          error_pct:    errPct,
-          readings:     records.length,
-          last_updated: latest.recorded_at,
-        }
-      })
+    return options
   }, [measurements])
+
+  const [selectedSo, setSelectedSo] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!selectedSo && orderOptions.length > 0) setSelectedSo(orderOptions[0])
+  }, [orderOptions, selectedSo])
+
+  // ── Per-piece breakdown for the selected order ──────────────
+  const orderBreakdown = useMemo(() => {
+    if (!selectedSo) return null
+    const records = measurements
+      .filter(r => r.session_so === selectedSo)
+      .slice()
+      .sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime())
+
+    const pieces = records.map((r, i) => {
+      const corr  = r.corrected_mm ?? r.raw_mm
+      const errMm = r.target_mm !== null ? corr - r.target_mm : null
+      const absErr = errMm !== null ? Math.abs(errMm) : null
+      return {
+        index:    i + 1,
+        corrected_mm: corr,
+        target_mm:    r.target_mm,
+        error_mm:     errMm,
+        absError:     absErr,
+        accurate:     absErr !== null && absErr <= 2,
+        recorded_at:  r.recorded_at,
+      }
+    })
+
+    const withTarget = pieces.filter(p => p.absError !== null)
+    const accurateCount = withTarget.filter(p => p.accurate).length
+    const outCount       = withTarget.length - accurateCount
+    const maxAbsError    = withTarget.length ? Math.max(...withTarget.map(p => p.absError!)) : 1
+
+    return {
+      pieces,
+      total:         withTarget.length,
+      accurateCount,
+      outCount,
+      accuracyPct:   withTarget.length ? (accurateCount / withTarget.length) * 100 : null,
+      maxAbsError:   maxAbsError || 1,
+    }
+  }, [measurements, selectedSo])
 
   // ── Overall summary ────────────────────────────────────────
   const overall = useMemo(() => {
@@ -275,52 +302,92 @@ export default function AnalyticsClient() {
         </div>
       )}
 
-      {/* ── Measurement Comparison ───────────────────────────── */}
+      {/* ── Order Accuracy Breakdown ─────────────────────────── */}
       <Section
-        title="Measurement Comparison"
-        subtitle="Latest reading per session — raw vs ML-corrected vs target"
+        title="Order Accuracy Breakdown"
+        subtitle="Pick an order to see how many pieces were cut accurately vs out of target"
       >
-        {comparisonRows.length === 0 ? (
+        {orderOptions.length === 0 ? (
           <p className="text-xs text-gray-400">No records yet.</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-[10px] text-gray-400 uppercase tracking-wide border-b border-gray-100">
-                  {['SO Number', 'Machine', 'Raw (mm)', 'Corrected (mm)', 'Target (mm)', 'Error (mm)', 'Error (%)', 'Readings', 'Last Updated'].map(h => (
-                    <th key={h} className="text-left py-2 pr-4 font-medium whitespace-nowrap">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {comparisonRows.map(row => {
-                  const absErr   = row.error_mm !== null ? Math.abs(row.error_mm) : null
-                  const errColor = absErr === null ? 'text-gray-400'
-                    : absErr <= 2 ? 'text-green-600'
-                    : absErr <= 5 ? 'text-orange-500'
-                    : 'text-red-500'
-                  return (
-                    <tr key={row.so_number} className="border-b border-gray-50 last:border-0 hover:bg-gray-50 transition-colors">
-                      <td className="py-2 pr-4 font-medium text-gray-700">{row.so_number}</td>
-                      <td className="py-2 pr-4 text-gray-500">{row.machine_code}</td>
-                      <td className="py-2 pr-4 tabular-nums text-gray-500">{row.raw_mm.toLocaleString()}</td>
-                      <td className="py-2 pr-4 tabular-nums font-medium text-[#1a56db]">{row.corrected_mm.toLocaleString()}</td>
-                      <td className="py-2 pr-4 tabular-nums text-gray-600">{row.target_mm?.toLocaleString() ?? '—'}</td>
-                      <td className={`py-2 pr-4 tabular-nums font-semibold ${errColor}`}>
-                        {row.error_mm !== null ? (row.error_mm > 0 ? '+' : '') + row.error_mm.toFixed(1) : '—'}
-                      </td>
-                      <td className={`py-2 pr-4 tabular-nums font-semibold ${errColor}`}>
-                        {row.error_pct !== null ? (row.error_pct > 0 ? '+' : '') + row.error_pct.toFixed(2) + '%' : '—'}
-                      </td>
-                      <td className="py-2 pr-4 tabular-nums text-gray-500">{row.readings}</td>
-                      <td className="py-2 text-gray-400 whitespace-nowrap">
-                        {new Date(row.last_updated).toLocaleString('en-GB')}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+          <div className="space-y-4">
+            <select
+              value={selectedSo ?? ''}
+              onChange={e => setSelectedSo(e.target.value)}
+              className="text-xs border border-gray-200 rounded-lg px-3 py-2 text-gray-700 bg-white focus:outline-none focus:border-[#1a56db]"
+            >
+              {orderOptions.map(so => (
+                <option key={so} value={so}>{so}</option>
+              ))}
+            </select>
+
+            {orderBreakdown && orderBreakdown.total > 0 ? (
+              <>
+                {/* Summary cards */}
+                <div className="grid grid-cols-3 gap-3">
+                  <StatCard label="Pieces measured" value={orderBreakdown.total} />
+                  <StatCard
+                    label="Accurate (±2mm)"
+                    value={orderBreakdown.accurateCount}
+                    sub={`${orderBreakdown.accuracyPct?.toFixed(1)}%`}
+                    highlight="green"
+                  />
+                  <StatCard
+                    label="Out of target"
+                    value={orderBreakdown.outCount}
+                    sub={orderBreakdown.outCount > 0 ? 'beyond ±2mm' : 'none'}
+                    highlight={orderBreakdown.outCount > 0 ? 'red' : 'green'}
+                  />
+                </div>
+
+                {/* Stacked proportion bar */}
+                <div>
+                  <div className="flex w-full h-3 rounded-full overflow-hidden bg-gray-100">
+                    <div
+                      className="bg-[#639922]"
+                      style={{ width: `${(orderBreakdown.accurateCount / orderBreakdown.total) * 100}%` }}
+                    />
+                    <div
+                      className="bg-[#d6453d]"
+                      style={{ width: `${(orderBreakdown.outCount / orderBreakdown.total) * 100}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[10.5px] text-gray-400 mt-1.5">
+                    <span>● Accurate ({orderBreakdown.accurateCount})</span>
+                    <span>● Out of target ({orderBreakdown.outCount})</span>
+                  </div>
+                </div>
+
+                {/* Per-piece error bar chart */}
+                <div>
+                  <p className="text-[10.5px] font-medium text-gray-400 uppercase tracking-wide mb-2">
+                    Per-piece error (mm) — in cutting order
+                  </p>
+                  <div className="flex items-end gap-[2px] h-28 overflow-x-auto pb-1">
+                    {orderBreakdown.pieces.map(p => {
+                      const heightPct = p.absError !== null
+                        ? Math.max(4, (p.absError / orderBreakdown.maxAbsError) * 100)
+                        : 4
+                      const color = p.absError === null ? 'bg-gray-200'
+                        : p.absError <= 2 ? 'bg-[#639922]'
+                        : p.absError <= 5 ? 'bg-[#e0a527]'
+                        : 'bg-[#d6453d]'
+                      return (
+                        <div
+                          key={p.index}
+                          title={`Piece #${p.index}: ${p.error_mm !== null ? (p.error_mm > 0 ? '+' : '') + p.error_mm.toFixed(1) + ' mm' : 'no target'}`}
+                          className={`flex-shrink-0 w-2 rounded-sm ${color}`}
+                          style={{ height: `${heightPct}%` }}
+                        />
+                      )
+                    })}
+                  </div>
+                  <p className="text-[10px] text-gray-300 mt-1">Hover a bar to see the exact piece error</p>
+                </div>
+              </>
+            ) : (
+              <p className="text-xs text-gray-400">No target-comparable readings for this order yet.</p>
+            )}
           </div>
         )}
       </Section>

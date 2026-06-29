@@ -199,21 +199,23 @@ useEffect(() => {
     }
   // ── End job ─────────────────────────────────────────────
   async function handleEndJob() {
-    if (!sessionId || !order) return
+    if (!order) return
 
     const finalPcs  = plc?.current_pcs ?? 0
     const targetPcs = order.pcs ?? 0
     const jobStatus = finalPcs >= targetPcs && targetPcs > 0 ? 'done' : 'pending'
 
-    // Save to job_sessions
-    await supabaseBrowser
-      .from('job_sessions')
-      .update({
-        completed_pcs: finalPcs,
-        status:        jobStatus,
-        ended_at:      new Date().toISOString(),
-      })
-      .eq('id', sessionId)
+    // Save to job_sessions (only if we have a session id)
+    if (sessionId) {
+      await supabaseBrowser
+        .from('job_sessions')
+        .update({
+          completed_pcs: finalPcs,
+          status:        jobStatus,
+          ended_at:      new Date().toISOString(),
+        })
+        .eq('id', sessionId)
+    }
 
     // Clear session in plc_readings
     await supabaseBrowser
@@ -265,7 +267,7 @@ useEffect(() => {
 
       {/* ── End job confirm modal ── */}
       {showEndConfirm && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60] p-6">
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-6">
           <div className="bg-white rounded-2xl p-6 w-full max-w-sm">
             <p className="text-lg font-bold text-gray-800 mb-2">End this job?</p>
             <p className="text-sm text-gray-500 mb-1">SO: <span className="font-medium">{order?.so_number}</span></p>

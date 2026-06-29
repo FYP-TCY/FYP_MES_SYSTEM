@@ -52,6 +52,9 @@ export default function WorkerPage() {
   const [matchedOrders, setMatchedOrders] = useState<Order[]>([])
   const [showLengthPicker, setShowLengthPicker] = useState(false)
 
+  // Already-completed order tried again
+  const [alreadyDone, setAlreadyDone] = useState<Order | null>(null)
+
   useEffect(() => { inputRef.current?.focus() }, [])
 
   // ── 页面加载时自动恢复 session ───────────────────────────
@@ -163,6 +166,15 @@ useEffect(() => {
 
   // ── Start a job for a specific order row ────────────────
   async function startJob(orderData: Order) {
+    // Block re-running an already completed order
+    if ((orderData.status ?? '').toLowerCase() === 'completed') {
+      setShowLengthPicker(false)
+      setMatchedOrders([])
+      setScanning(false)
+      setAlreadyDone(orderData)
+      return
+    }
+
     setScanning(true)
     setShowLengthPicker(false)
     setMatchedOrders([])
@@ -350,6 +362,24 @@ useEffect(() => {
               className="mt-4 w-full py-3 rounded-xl border border-gray-200 text-gray-500 text-sm font-medium"
             >
               Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Already completed modal ── */}
+      {alreadyDone && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60] p-6">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-sm text-center">
+            <div className="text-[56px] leading-none mb-2">✅</div>
+            <p className="text-lg font-bold text-gray-800 mb-1">Order Already Completed</p>
+            <p className="text-sm text-gray-500 mb-1">{alreadyDone.so_number} · {alreadyDone.length_m} m</p>
+            <p className="text-sm text-gray-400 mb-4">This length has already been completed ({alreadyDone.pcs ?? '—'} pcs).</p>
+            <button
+              onClick={() => { setAlreadyDone(null); setSoInput(''); setTimeout(() => inputRef.current?.focus(), 50) }}
+              className="w-full py-3 rounded-xl bg-[#1a56db] text-white text-sm font-semibold"
+            >
+              OK
             </button>
           </div>
         </div>

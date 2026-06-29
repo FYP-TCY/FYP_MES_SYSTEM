@@ -47,13 +47,6 @@ export default function RootLayout({
           >
             Worker Terminal
           </Link>
-
-          <Link
-            href="/analytics"
-            className="px-3 py-1.5 text-xs font-medium rounded-md text-gray-500 hover:text-gray-800 hover:bg-gray-50 transition-colors"
-          >
-            Analytics
-          </Link>
         </nav>
 
         {/* ── Page content ── */}

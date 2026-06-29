@@ -84,11 +84,17 @@ export default function WorkerPage() {
         const { data: orderData } = await orderQuery.limit(1).single()
         if (orderData) setOrder(orderData)
 
-        const { data: sessionData } = await supabaseBrowser
+        let sessQuery = supabaseBrowser
           .from('job_sessions')
           .select('*')
           .eq('so_number', plcRow.session_so)
           .eq('status', 'in_progress')
+
+        if (plcRow.target_mm) {
+          sessQuery = sessQuery.eq('target_mm', plcRow.target_mm)
+        }
+
+        const { data: sessionData } = await sessQuery
           .order('started_at', { ascending: false })
           .limit(1)
           .single()
@@ -167,12 +173,20 @@ export default function WorkerPage() {
 
     const so = orderData.so_number
 
-    // Check for existing in_progress session
-    const { data: existingSession } = await supabaseBrowser
+    const orderTargetMm = orderData.length_m ? Math.round(orderData.length_m * 1000) : null
+
+    // Check for existing in_progress session matching BOTH so_number AND target_mm
+    let existingQuery = supabaseBrowser
       .from('job_sessions')
       .select('*')
       .eq('so_number', so)
       .eq('status', 'in_progress')
+
+    if (orderTargetMm !== null) {
+      existingQuery = existingQuery.eq('target_mm', orderTargetMm)
+    }
+
+    const { data: existingSession } = await existingQuery
       .order('started_at', { ascending: false })
       .limit(1)
       .single()
@@ -192,7 +206,7 @@ export default function WorkerPage() {
           job_order_no: orderData.job_order_no,
           machine_code: orderData.machine_code,
           target_pcs:   orderData.pcs,
-          target_mm:    orderData.length_m ? Math.round(orderData.length_m * 1000) : null,
+          target_mm:    orderTargetMm,
           completed_pcs: 0,
           status:       'in_progress',
         })

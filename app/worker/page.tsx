@@ -48,6 +48,10 @@ export default function WorkerPage() {
   const [showEndConfirm, setShowEndConfirm] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // Length picker (when one SO has multiple lengths)
+  const [matchedOrders, setMatchedOrders] = useState<Order[]>([])
+  const [showLengthPicker, setShowLengthPicker] = useState(false)
+
   useEffect(() => { inputRef.current?.focus() }, [])
 
   // ── 页面加载时自动恢复 session ───────────────────────────
@@ -64,23 +68,32 @@ useEffect(() => {
     if (!plcRow) return
     setPlc(plcRow)
 
-    // 2. 如果有 session_so，自动恢复订单
+    // 2. 如果有 session_so，自动恢复订单（按 target_mm 匹配正确长度）
     if (plcRow.session_so) {
-      const { data: orderData } = await supabaseBrowser
+      let orderQuery = supabaseBrowser
         .from('orders')
         .select('*')
         .eq('so_number', plcRow.session_so)
-        .limit(1)
-        .single()
 
+      if (plcRow.target_mm) {
+        orderQuery = orderQuery.eq('length_m', plcRow.target_mm / 1000)
+      }
+
+      const { data: orderData } = await orderQuery.limit(1).single()
       if (orderData) setOrder(orderData)
 
-      // 3. 恢复 session id
-      const { data: sessionData } = await supabaseBrowser
+      // 3. 恢复 session id（按 target_mm 匹配）
+      let sessQuery = supabaseBrowser
         .from('job_sessions')
         .select('*')
         .eq('so_number', plcRow.session_so)
         .eq('status', 'in_progress')
+
+      if (plcRow.target_mm) {
+        sessQuery = sessQuery.eq('target_mm', plcRow.target_mm)
+      }
+
+      const { data: sessionData } = await sessQuery
         .order('started_at', { ascending: false })
         .limit(1)
         .single()
@@ -121,15 +134,13 @@ useEffect(() => {
     setScanning(true)
     setNotFound(false)
 
-    // 1. Fetch order
-    const { data: orderData, error } = await supabaseBrowser
+    // 1. Fetch ALL order rows for this SO number
+    const { data: allOrders, error } = await supabaseBrowser
       .from('orders')
       .select('*')
       .eq('so_number', so)
-      .limit(1)
-      .single()
 
-    if (error || !orderData) {
+    if (error || !allOrders || allOrders.length === 0) {
       setScanning(false)
       setNotFound(true)
       setSoInput('')
@@ -137,12 +148,40 @@ useEffect(() => {
       return
     }
 
-    // 2. Check for existing in_progress session
-    const { data: existingSession } = await supabaseBrowser
+    // 2. If there are multiple different lengths, let the worker choose
+    const uniqueLengths = new Set(allOrders.map(o => o.length_m))
+    if (uniqueLengths.size > 1) {
+      setMatchedOrders(allOrders)
+      setShowLengthPicker(true)
+      setScanning(false)
+      return
+    }
+
+    // Single length — start it directly
+    await startJob(allOrders[0])
+  }
+
+  // ── Start a job for a specific order row ────────────────
+  async function startJob(orderData: Order) {
+    setScanning(true)
+    setShowLengthPicker(false)
+    setMatchedOrders([])
+
+    const so = orderData.so_number
+    const orderTargetMm = orderData.length_m ? Math.round(orderData.length_m * 1000) : null
+
+    // Check for an existing in_progress session for this SO + length
+    let existingQuery = supabaseBrowser
       .from('job_sessions')
       .select('*')
       .eq('so_number', so)
       .eq('status', 'in_progress')
+
+    if (orderTargetMm !== null) {
+      existingQuery = existingQuery.eq('target_mm', orderTargetMm)
+    }
+
+    const { data: existingSession } = await existingQuery
       .order('started_at', { ascending: false })
       .limit(1)
       .single()
@@ -165,7 +204,7 @@ useEffect(() => {
           job_order_no: orderData.job_order_no,
           machine_code: orderData.machine_code,
           target_pcs:   orderData.pcs,
-          target_mm:    orderData.length_m ? Math.round(orderData.length_m * 1000) : null,
+          target_mm:    orderTargetMm,
           completed_pcs: 0,
           status:       'in_progress',
         })
@@ -182,13 +221,12 @@ useEffect(() => {
     setSoInput('')
     setScanning(false)
 
-    // 3. Notify bridge: new session
-    // 3. Notify bridge: new session
+    // Notify bridge: new session
     const { data: updateResult, error: updateError } = await supabaseBrowser
       .from('plc_readings')
       .update({
-        session_so: so,
-        target_mm:  orderData.length_m ? Math.round(orderData.length_m * 1000) : null,
+        session_so:  so,
+        target_mm:   orderTargetMm,
         current_pcs: startPcs,
       })
       .eq('machine_code', 'MC-01')
@@ -196,7 +234,7 @@ useEffect(() => {
 
     console.log('UPDATE result:', updateResult)
     console.log('UPDATE error:', updateError)
-    }
+  }
   // ── End job ─────────────────────────────────────────────
   async function handleEndJob() {
     if (!order) return
@@ -249,6 +287,44 @@ useEffect(() => {
 
   return (
     <div className="min-h-screen bg-[#f5f7fa] flex flex-col">
+
+      {/* ── Length picker modal ── */}
+      {showLengthPicker && matchedOrders.length > 0 && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60] p-6">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md">
+            <p className="text-lg font-bold text-gray-800 mb-1">Choose Length</p>
+            <p className="text-sm text-gray-400 mb-4">
+              SO <span className="font-medium text-gray-600">{matchedOrders[0].so_number}</span> has {matchedOrders.length} items with different lengths. Tap the one to run:
+            </p>
+            <div className="flex flex-col gap-2 max-h-[55vh] overflow-y-auto">
+              {[...matchedOrders]
+                .sort((a, b) => (a.length_m ?? 0) - (b.length_m ?? 0))
+                .map(o => (
+                  <button
+                    key={o.id}
+                    onClick={() => startJob(o)}
+                    className="flex items-center justify-between p-4 bg-gray-50 hover:bg-blue-50 border border-gray-100 hover:border-[#1a56db] rounded-xl transition-colors text-left"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-gray-800 truncate">{o.item_name}</p>
+                      <p className="text-xs text-gray-400 mt-0.5">{o.item_code} · {o.pcs ?? '—'} pcs</p>
+                    </div>
+                    <div className="flex-shrink-0 ml-3 text-right">
+                      <p className="text-xl font-bold text-[#1a56db]">{o.length_m ?? '—'} m</p>
+                      <p className="text-[10px] text-gray-400">{o.length_m ? `${(o.length_m * 1000).toLocaleString()} mm` : ''}</p>
+                    </div>
+                  </button>
+                ))}
+            </div>
+            <button
+              onClick={() => { setShowLengthPicker(false); setMatchedOrders([]); setSoInput(''); inputRef.current?.focus() }}
+              className="mt-4 w-full py-3 rounded-xl border border-gray-200 text-gray-500 text-sm font-medium"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── Completion overlay ── */}
       {isComplete && (

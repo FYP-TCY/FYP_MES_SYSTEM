@@ -216,8 +216,14 @@ useEffect(() => {
       setResumedPcs(0)
     }
 
+    // Mark this order row as In Progress
+    await supabaseBrowser
+      .from('orders')
+      .update({ status: 'In Progress' })
+      .eq('id', orderData.id)
+
     setSessionId(sessId)
-    setOrder(orderData)
+    setOrder({ ...orderData, status: 'In Progress' })
     setSoInput('')
     setScanning(false)
 
@@ -255,6 +261,12 @@ useEffect(() => {
         .eq('id', sessionId)
     }
 
+    // Update order status: Completed if target reached, else Pending
+    await supabaseBrowser
+      .from('orders')
+      .update({ status: jobStatus === 'done' ? 'Completed' : 'Pending' })
+      .eq('id', order.id)
+
     // Clear session in plc_readings
     await supabaseBrowser
       .from('plc_readings')
@@ -282,8 +294,25 @@ useEffect(() => {
   const pct       = targetMm ? Math.min(100, Math.round((mmValue / targetMm) * 100)) : 0
 
   useEffect(() => {
-    if (order && targetPcs > 0 && pcsValue >= targetPcs) setIsComplete(true)
-  }, [order, targetPcs, pcsValue])
+    if (!order || targetPcs <= 0 || pcsValue < targetPcs) return
+    if (isComplete) return
+
+    setIsComplete(true)
+
+    // Target reached — mark session done and order Completed
+    if (sessionId) {
+      supabaseBrowser
+        .from('job_sessions')
+        .update({ completed_pcs: pcsValue, status: 'done', ended_at: new Date().toISOString() })
+        .eq('id', sessionId)
+        .then(() => {})
+    }
+    supabaseBrowser
+      .from('orders')
+      .update({ status: 'Completed' })
+      .eq('id', order.id)
+      .then(() => {})
+  }, [order, sessionId, targetPcs, pcsValue, isComplete])
 
   return (
     <div className="min-h-screen bg-[#f5f7fa] flex flex-col">

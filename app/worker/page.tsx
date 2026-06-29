@@ -48,66 +48,52 @@ export default function WorkerPage() {
   const [showEndConfirm, setShowEndConfirm] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  // Length picker state (for SO numbers with multiple lengths)
-  const [matchedOrders, setMatchedOrders] = useState<Order[]>([])
-  const [showLengthPicker, setShowLengthPicker] = useState(false)
-
-  // Track whether we already auto-ended this session (prevent double-fire)
-  const autoEndedRef = useRef(false)
-
   useEffect(() => { inputRef.current?.focus() }, [])
 
-  // ── Restore session on page load ───────────────────────────
-  useEffect(() => {
-    async function restoreSession() {
-      const { data: plcRow } = await supabaseBrowser
-        .from('plc_readings')
+  // ── 页面加载时自动恢复 session ───────────────────────────
+useEffect(() => {
+  async function restoreSession() {
+    // 1. 读取最新的 plc_readings
+    const { data: plcRow } = await supabaseBrowser
+      .from('plc_readings')
+      .select('*')
+      .order('recorded_at', { ascending: false })
+      .limit(1)
+      .single()
+
+    if (!plcRow) return
+    setPlc(plcRow)
+
+    // 2. 如果有 session_so，自动恢复订单
+    if (plcRow.session_so) {
+      const { data: orderData } = await supabaseBrowser
+        .from('orders')
         .select('*')
-        .order('recorded_at', { ascending: false })
+        .eq('so_number', plcRow.session_so)
         .limit(1)
         .single()
 
-      if (!plcRow) return
-      setPlc(plcRow)
+      if (orderData) setOrder(orderData)
 
-      if (plcRow.session_so) {
-        // Restore order — match by SO + target_mm to get the right length variant
-        let orderQuery = supabaseBrowser
-          .from('orders')
-          .select('*')
-          .eq('so_number', plcRow.session_so)
+      // 3. 恢复 session id
+      const { data: sessionData } = await supabaseBrowser
+        .from('job_sessions')
+        .select('*')
+        .eq('so_number', plcRow.session_so)
+        .eq('status', 'in_progress')
+        .order('started_at', { ascending: false })
+        .limit(1)
+        .single()
 
-        if (plcRow.target_mm) {
-          orderQuery = orderQuery.eq('length_m', plcRow.target_mm / 1000)
-        }
-
-        const { data: orderData } = await orderQuery.limit(1).single()
-        if (orderData) setOrder(orderData)
-
-        let sessQuery = supabaseBrowser
-          .from('job_sessions')
-          .select('*')
-          .eq('so_number', plcRow.session_so)
-          .eq('status', 'in_progress')
-
-        if (plcRow.target_mm) {
-          sessQuery = sessQuery.eq('target_mm', plcRow.target_mm)
-        }
-
-        const { data: sessionData } = await sessQuery
-          .order('started_at', { ascending: false })
-          .limit(1)
-          .single()
-
-        if (sessionData) {
-          setSessionId(sessionData.id)
-          setResumedPcs(sessionData.completed_pcs)
-        }
+      if (sessionData) {
+        setSessionId(sessionData.id)
+        setResumedPcs(sessionData.completed_pcs)
       }
     }
+  }
 
-    restoreSession()
-  }, [])
+  restoreSession()
+}, [])
 
   // ── Realtime PLC subscription ───────────────────────────
   useEffect(() => {
@@ -135,13 +121,15 @@ export default function WorkerPage() {
     setScanning(true)
     setNotFound(false)
 
-    // Fetch ALL order rows for this SO number
-    const { data: allOrders, error } = await supabaseBrowser
+    // 1. Fetch order
+    const { data: orderData, error } = await supabaseBrowser
       .from('orders')
       .select('*')
       .eq('so_number', so)
+      .limit(1)
+      .single()
 
-    if (error || !allOrders || allOrders.length === 0) {
+    if (error || !orderData) {
       setScanning(false)
       setNotFound(true)
       setSoInput('')
@@ -149,44 +137,12 @@ export default function WorkerPage() {
       return
     }
 
-    // Check which ones have distinct lengths
-    const uniqueLengths = new Set(allOrders.map(o => o.length_m))
-
-    if (uniqueLengths.size > 1) {
-      // Multiple different lengths — let worker choose
-      setMatchedOrders(allOrders)
-      setShowLengthPicker(true)
-      setScanning(false)
-      return
-    }
-
-    // Single length (or all same length) — proceed directly
-    await startJob(allOrders[0])
-  }
-
-  // ── Start job with a specific order row ─────────────────
-  async function startJob(orderData: Order) {
-    setScanning(true)
-    setShowLengthPicker(false)
-    setMatchedOrders([])
-    autoEndedRef.current = false
-
-    const so = orderData.so_number
-
-    const orderTargetMm = orderData.length_m ? Math.round(orderData.length_m * 1000) : null
-
-    // Check for existing in_progress session matching BOTH so_number AND target_mm
-    let existingQuery = supabaseBrowser
+    // 2. Check for existing in_progress session
+    const { data: existingSession } = await supabaseBrowser
       .from('job_sessions')
       .select('*')
       .eq('so_number', so)
       .eq('status', 'in_progress')
-
-    if (orderTargetMm !== null) {
-      existingQuery = existingQuery.eq('target_mm', orderTargetMm)
-    }
-
-    const { data: existingSession } = await existingQuery
       .order('started_at', { ascending: false })
       .limit(1)
       .single()
@@ -195,10 +151,13 @@ export default function WorkerPage() {
     let startPcs = 0
 
     if (existingSession) {
+      // Resume existing session
       sessId    = existingSession.id
       startPcs  = existingSession.completed_pcs
       setResumedPcs(startPcs)
+      console.log(`Resuming session ${sessId}, pcs: ${startPcs}`)
     } else {
+      // Create new session
       const { data: newSession } = await supabaseBrowser
         .from('job_sessions')
         .insert({
@@ -206,7 +165,7 @@ export default function WorkerPage() {
           job_order_no: orderData.job_order_no,
           machine_code: orderData.machine_code,
           target_pcs:   orderData.pcs,
-          target_mm:    orderTargetMm,
+          target_mm:    orderData.length_m ? Math.round(orderData.length_m * 1000) : null,
           completed_pcs: 0,
           status:       'in_progress',
         })
@@ -218,28 +177,26 @@ export default function WorkerPage() {
       setResumedPcs(0)
     }
 
-    // Update order status to In Progress
-    await supabaseBrowser
-      .from('orders')
-      .update({ status: 'In Progress' })
-      .eq('id', orderData.id)
-
     setSessionId(sessId)
-    setOrder({ ...orderData, status: 'In Progress' })
+    setOrder(orderData)
     setSoInput('')
     setScanning(false)
 
-    // Notify bridge: new session
-    await supabaseBrowser
+    // 3. Notify bridge: new session
+    // 3. Notify bridge: new session
+    const { data: updateResult, error: updateError } = await supabaseBrowser
       .from('plc_readings')
       .update({
-        session_so:  so,
-        target_mm:   orderData.length_m ? Math.round(orderData.length_m * 1000) : null,
+        session_so: so,
+        target_mm:  orderData.length_m ? Math.round(orderData.length_m * 1000) : null,
         current_pcs: startPcs,
       })
-      .eq('machine_code', orderData.machine_code)
-  }
+      .eq('machine_code', 'MC-01')
+      .select()
 
+    console.log('UPDATE result:', updateResult)
+    console.log('UPDATE error:', updateError)
+    }
   // ── End job ─────────────────────────────────────────────
   async function handleEndJob() {
     if (!sessionId || !order) return
@@ -248,7 +205,7 @@ export default function WorkerPage() {
     const targetPcs = order.pcs ?? 0
     const jobStatus = finalPcs >= targetPcs && targetPcs > 0 ? 'done' : 'pending'
 
-    // Update job_sessions
+    // Save to job_sessions
     await supabaseBrowser
       .from('job_sessions')
       .update({
@@ -258,13 +215,6 @@ export default function WorkerPage() {
       })
       .eq('id', sessionId)
 
-    // Update order status
-    const orderStatus = jobStatus === 'done' ? 'Completed' : 'Pending'
-    await supabaseBrowser
-      .from('orders')
-      .update({ status: orderStatus })
-      .eq('id', order.id)
-
     // Clear session in plc_readings
     await supabaseBrowser
       .from('plc_readings')
@@ -272,9 +222,8 @@ export default function WorkerPage() {
         session_so:  null,
         target_mm:   null,
         current_pcs: 0,
-        length_mm:   0,
       })
-      .eq('machine_code', order.machine_code)
+      .eq('machine_code', 'MC-01')
 
     // Reset local state
     setOrder(null)
@@ -283,7 +232,6 @@ export default function WorkerPage() {
     setShowEndConfirm(false)
     setResumedPcs(0)
     setSoInput('')
-    autoEndedRef.current = false
     setTimeout(() => inputRef.current?.focus(), 50)
   }
 
@@ -293,76 +241,12 @@ export default function WorkerPage() {
   const targetMm  = order?.length_m ? order.length_m * 1000 : null
   const pct       = targetMm ? Math.min(100, Math.round((mmValue / targetMm) * 100)) : 0
 
-  // ── Auto-complete: update status when target pieces reached ──
   useEffect(() => {
-    if (!order || !sessionId || targetPcs <= 0 || pcsValue < targetPcs) return
-    if (isComplete) return
-
-    setIsComplete(true)
-
-    if (!autoEndedRef.current) {
-      autoEndedRef.current = true
-
-      // Update job_sessions, orders, and clear plc_readings session
-      Promise.all([
-        supabaseBrowser
-          .from('job_sessions')
-          .update({
-            completed_pcs: pcsValue,
-            status:        'done',
-            ended_at:      new Date().toISOString(),
-          })
-          .eq('id', sessionId),
-        supabaseBrowser
-          .from('orders')
-          .update({ status: 'Completed' })
-          .eq('id', order.id),
-        supabaseBrowser
-          .from('plc_readings')
-          .update({ session_so: null, target_mm: null, current_pcs: 0, length_mm: 0 })
-          .eq('machine_code', order.machine_code),
-      ])
-    }
-  }, [order, sessionId, targetPcs, pcsValue, isComplete])
+    if (order && targetPcs > 0 && pcsValue >= targetPcs) setIsComplete(true)
+  }, [order, targetPcs, pcsValue])
 
   return (
     <div className="min-h-screen bg-[#f5f7fa] flex flex-col">
-
-      {/* ── Length picker modal ── */}
-      {showLengthPicker && matchedOrders.length > 0 && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-6">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md">
-            <p className="text-lg font-bold text-gray-800 mb-1">Multiple Lengths Found</p>
-            <p className="text-sm text-gray-400 mb-4">
-              SO <span className="font-medium text-gray-600">{matchedOrders[0].so_number}</span> has {matchedOrders.length} items with different lengths. Choose which one to start:
-            </p>
-            <div className="flex flex-col gap-2 max-h-[50vh] overflow-y-auto">
-              {matchedOrders.map(o => (
-                <button
-                  key={o.id}
-                  onClick={() => startJob(o)}
-                  className="flex items-center justify-between p-4 bg-gray-50 hover:bg-blue-50 border border-gray-100 hover:border-[#1a56db] rounded-xl transition-colors text-left"
-                >
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-gray-800 truncate">{o.item_name}</p>
-                    <p className="text-xs text-gray-400 mt-0.5">{o.item_code} · {o.pcs ?? '—'} pcs</p>
-                  </div>
-                  <div className="flex-shrink-0 ml-3 text-right">
-                    <p className="text-xl font-bold text-[#1a56db]">{o.length_m ?? '—'} m</p>
-                    <p className="text-[10px] text-gray-400">{o.length_m ? `${(o.length_m * 1000).toLocaleString()} mm` : ''}</p>
-                  </div>
-                </button>
-              ))}
-            </div>
-            <button
-              onClick={() => { setShowLengthPicker(false); setMatchedOrders([]); setSoInput(''); inputRef.current?.focus() }}
-              className="mt-4 w-full py-3 rounded-xl border border-gray-200 text-gray-500 text-sm font-medium"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* ── Completion overlay ── */}
       {isComplete && (
@@ -370,9 +254,8 @@ export default function WorkerPage() {
           <div className="text-[80px] leading-none">✅</div>
           <p className="text-4xl font-bold text-[#27500a] text-center">Job Complete!</p>
           <p className="text-xl text-[#3b6d11] text-center">{order?.so_number} · {pcsValue} / {targetPcs} pcs</p>
-          <p className="text-sm text-[#3b6d11]/60">Status automatically updated to Done</p>
           <button
-            onClick={handleEndJob}
+            onClick={() => setShowEndConfirm(true)}
             className="mt-2 px-10 py-4 bg-[#27500a] text-white text-xl font-semibold rounded-2xl"
           >
             End Job & Save

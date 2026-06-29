@@ -66,11 +66,12 @@ export default function MachineDashboard() {
   const [plcData, setPlcData]           = useState<PlcReading | null>(null)
   const [plcConnected, setPlcConnected] = useState(false)
   const [lastUpdate, setLastUpdate]     = useState<string>('')
-  const lastSoRef = useRef<string | null>(null)
+  const [lastSo, setLastSo]             = useState<string | null>(null)
 
+  // ── load order by SO number ──────────────────────────────
   async function loadOrder(soNumber: string) {
-    if (!soNumber || soNumber === lastSoRef.current) return
-    lastSoRef.current = soNumber
+    if (!soNumber || soNumber === lastSo) return
+    setLastSo(soNumber)
 
     const { data, error } = await supabaseBrowser
       .from('orders')
@@ -81,6 +82,7 @@ export default function MachineDashboard() {
 
     if (!error && data) {
       setOrder(data)
+      console.log('Order loaded:', soNumber)
     }
   }
 
@@ -99,6 +101,7 @@ export default function MachineDashboard() {
         setPlcConnected(true)
         setLastUpdate(new Date().toLocaleTimeString('en-GB'))
 
+        // Auto-load order if session_so exists
         if (row.session_so) {
           loadOrder(row.session_so)
         }
@@ -108,7 +111,7 @@ export default function MachineDashboard() {
     fetchLatest()
   }, [])
 
-  // ── realtime subscription (stable — no dependency on lastSo) ──
+  // ── realtime subscription ────────────────────────────────
   useEffect(() => {
     const channel = supabaseBrowser
       .channel('dashboard-plc')
@@ -125,20 +128,22 @@ export default function MachineDashboard() {
           setPlcConnected(true)
           setLastUpdate(new Date().toLocaleTimeString('en-GB'))
 
-          if (row.session_so && row.session_so !== lastSoRef.current) {
+          // If SO changed → auto load new order
+          if (row.session_so && row.session_so !== lastSo) {
             loadOrder(row.session_so)
           }
 
-          if (!row.session_so && lastSoRef.current) {
+          // If session cleared → clear order
+          if (!row.session_so) {
             setOrder(null)
-            lastSoRef.current = null
+            setLastSo(null)
           }
         }
       )
       .subscribe()
 
     return () => { supabaseBrowser.removeChannel(channel) }
-  }, [])
+  }, [lastSo])
 
   const plcMm       = plcData?.length_mm ?? 0
   const plcCorrected = plcData?.corrected_length_mm ?? plcMm

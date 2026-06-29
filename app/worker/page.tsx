@@ -265,7 +265,7 @@ useEffect(() => {
 
       {/* ── End job confirm modal ── */}
       {showEndConfirm && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-6">
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60] p-6">
           <div className="bg-white rounded-2xl p-6 w-full max-w-sm">
             <p className="text-lg font-bold text-gray-800 mb-2">End this job?</p>
             <p className="text-sm text-gray-500 mb-1">SO: <span className="font-medium">{order?.so_number}</span></p>

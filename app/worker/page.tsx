@@ -286,24 +286,28 @@ export default function WorkerPage() {
 
     setIsComplete(true)
 
-    // Auto-update job_sessions and orders status immediately
     if (!autoEndedRef.current) {
       autoEndedRef.current = true
 
-      supabaseBrowser
-        .from('job_sessions')
-        .update({
-          completed_pcs: pcsValue,
-          status:        'done',
-          ended_at:      new Date().toISOString(),
-        })
-        .eq('id', sessionId)
-        .then(() => {
-          supabaseBrowser
-            .from('orders')
-            .update({ status: 'Completed' })
-            .eq('id', order.id)
-        })
+      // Update job_sessions, orders, and clear plc_readings session
+      Promise.all([
+        supabaseBrowser
+          .from('job_sessions')
+          .update({
+            completed_pcs: pcsValue,
+            status:        'done',
+            ended_at:      new Date().toISOString(),
+          })
+          .eq('id', sessionId),
+        supabaseBrowser
+          .from('orders')
+          .update({ status: 'Completed' })
+          .eq('id', order.id),
+        supabaseBrowser
+          .from('plc_readings')
+          .update({ session_so: null, target_mm: null, current_pcs: 0, length_mm: 0 })
+          .eq('machine_code', order.machine_code),
+      ])
     }
   }, [order, sessionId, targetPcs, pcsValue, isComplete])
 

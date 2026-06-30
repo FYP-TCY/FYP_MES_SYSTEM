@@ -167,7 +167,7 @@ useEffect(() => {
   // ── Start a job for a specific order row ────────────────
   async function startJob(orderData: Order) {
     // Block re-running an already completed order
-    if ((orderData.status ?? '').toLowerCase() === 'completed') {
+    if (['completed', 'done', 'complete'].includes((orderData.status ?? '').trim().toLowerCase())) {
       setShowLengthPicker(false)
       setMatchedOrders([])
       setScanning(false)
@@ -276,7 +276,7 @@ useEffect(() => {
     // Update order status: Completed if target reached, else Pending
     await supabaseBrowser
       .from('orders')
-      .update({ status: jobStatus === 'done' ? 'Completed' : 'Pending' })
+      .update({ status: jobStatus === 'done' ? 'Done' : 'Pending' })
       .eq('id', order.id)
 
     // Clear session in plc_readings
@@ -321,7 +321,7 @@ useEffect(() => {
     }
     supabaseBrowser
       .from('orders')
-      .update({ status: 'Completed' })
+      .update({ status: 'Done' })
       .eq('id', order.id)
       .then(() => {})
   }, [order, sessionId, targetPcs, pcsValue, isComplete])
